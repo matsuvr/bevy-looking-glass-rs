@@ -17,6 +17,8 @@ bevy = { version = "0.20", default-features = false, features = ["std", "bevy_as
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Bridge exposes the same local HTTP API on Windows and macOS.
+ureq = { version = "=3.4.2", default-features = false }
 
 [dev-dependencies]
 bevy = { version = "0.20", default-features = false, features = ["async_executor", "bevy_log", "bevy_pbr", "bevy_winit", "multi_threaded", "x11", "tonemapping_luts", "zstd_rust"] }

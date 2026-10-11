@@ -1,10 +1,12 @@
 //! Direct Looking Glass output for Bevy 0.20 using Rust and embedded WESL.
 //!
-//! Install after Bevy's rendering plugins. Supply calibration bytes yourself,
+//! Install after Bevy's rendering plugins. Acquire device data with [`bridge::discover`],
+//! or supply raw calibration bytes yourself,
 //! then drive [`LookingGlassControl`] and [`LookingGlassView`] resources.
 //! One plugin instance manages one output window. No Bridge SDK is used.
 #![forbid(unsafe_code)]
 
+pub mod bridge;
 mod calibration;
 mod devices;
 mod optics;
