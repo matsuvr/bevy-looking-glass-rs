@@ -4,9 +4,11 @@ A small Bevy **0.20** plugin for direct Looking Glass display output. CPU code i
 safe Rust; GPU code is embedded WESL. No Looking Glass Bridge SDK, C/C++ bindings,
 DLL loading, JavaScript, or CPU image readback is added by this crate.
 
-This does **not** replace manufacturer device setup, firmware, USB calibration
-retrieval, or any manufacturer software needed to put a device into desktop mode.
-The application supplies the physical unit's raw `visual.json` calibration bytes.
+Install and run Looking Glass Bridge and connect the display's video and USB
+data connections. `bridge::discover()` retrieves attached light-field displays,
+their factory calibration and recommended quilts through Bridge's local HTTP API
+on Windows and macOS. Applications can use those values directly without asking
+users to find or create a calibration file.
 
 ## Usage
 
@@ -21,11 +23,20 @@ use bevy::{prelude::*, camera::visibility::RenderLayers};
 use bevy_looking_glass::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let calibration = parse_calibration(&std::fs::read("visual.json")?)?;
+    let display = bridge::discover()?.into_iter().next()
+        .ok_or("no calibrated Looking Glass is connected")?;
+    let quilt = display.quilt.ok_or("Bridge returned no default quilt")?;
+    let layout = ViewLayout::new(
+        quilt.columns,
+        quilt.rows,
+        quilt.width.checked_div(quilt.columns).ok_or("zero quilt columns")?,
+        quilt.height.checked_div(quilt.rows).ok_or("zero quilt rows")?,
+    )?;
+    let calibration = parse_calibration(display.calibration.as_bytes())?;
     let config = LookingGlassConfig::new(
         LookingGlassOutput::LightField {
             calibration,
-            layout: ViewLayout::new(8, 6, 210, 280)?,
+            layout,
             depth_scale: 1.0,
         },
         RenderLayers::layer(0), // scene
@@ -64,6 +75,26 @@ F10 toggles the quilt, F11 toggles fullscreen, and Escape stops output. Closing
 the main window closes the example's output. These policies are example code,
 not plugin behavior. The sample requires real calibration; synthetic calibration
 is confined to tests and desktop pipeline validation.
+
+## Bridge discovery
+
+`bridge::discover() -> Result<Vec<bridge::Display>, bridge::Error>` is a synchronous,
+window-independent query. Call it on a background worker in an interactive app.
+Each HTTP request has a five-second timeout and bypasses HTTP proxies.
+
+- `Err(bridge::Error::Unavailable)` means the local Bridge API cannot be reached.
+  The caller chooses its UI message; RusTuberV displays `Bridgeが見つかりません`.
+- `Ok(vec![])` means Bridge responded but no calibrated light-field unit was found.
+- Each `Display` contains its serial, name, hardware model, unmodified raw
+  `visual.json` string and optional default `Quilt` geometry. Select by serial
+  when multiple units are attached. Unknown model identifiers are accepted.
+- `Err(bridge::Error::Response(_))` reports failed or invalid Bridge responses.
+
+Discovery enters an orchestration, requests `available_output_devices`, and exits
+the session even if device parsing fails. Ordinary monitors and units without
+calibration are omitted. The function does not launch/install Bridge, write files
+or start output. `parse_calibration` still accepts raw bytes supplied directly by
+the host; rendering does not require a running Bridge after acquisition.
 
 ## Integration contract
 
@@ -109,9 +140,9 @@ samples the array directly. Quilt preview uses the same array without a quilt
 texture, assembly camera or tile sprites. View zero is bottom-left in a quilt.
 
 Raw lens values are normalized on the CPU; RGB stripes and cell-pattern modes
-0–4 use the embedded shader. No interpolation, view synthesis, cross-view GPU
-instancing, device detection, Bridge integration or Bevy 0.19 compatibility is
-included.
+0–4 use the embedded shader. Bridge is used only for optional device discovery;
+rendering runs directly in Bevy. No interpolation, view synthesis, cross-view GPU
+instancing or Bevy 0.19 compatibility is included.
 
 ## Catalog and HLD
 
@@ -148,6 +179,15 @@ with only normal dependencies; the WESL and device JSON are in the archive.
 Physical-panel optics, macOS execution of this extracted crate, and performance
 across devices remain unverified.
 
+Bridge discovery validation (2026-10-12): all 25 library tests and all-target
+Clippy with warnings denied passed. The new tests cover unavailable Bridge,
+session cleanup after parsing errors, multiple serials and preservation of raw
+optical cells and unknown model identifiers. The relocated HTTP module retrieved
+a connected Portrait's calibration and 3360-square, 8 x 6 default quilt. The same
+source passed an isolated `aarch64-apple-darwin` check. Checking the full Bevy crate
+for that target from Windows stopped at Bevy's `blake3` dependency because the
+Mac C compiler was unavailable. Mac hardware execution remains unverified.
+
 Use current stable Rust (minimum 1.99), Bevy 0.20, and normal Cargo checks:
 
 ```sh
@@ -169,6 +209,7 @@ SDK binaries and JavaScript source are not redistributed.
 - [Calibration file instructions](https://lfdocs.lookingglassfactory.com/software/index/unity-plugin-4.0-alpha)
 - [Native panel resolutions/orientation](https://lfdocs.lookingglassfactory.com/software/looking-glass-bridge/display-settings-on-windows)
 - [Bridge SDK scope](https://lfdocs.lookingglassfactory.com/software/looking-glass-bridge-sdk)
+- [Official Bridge.js HTTP protocol](https://github.com/Looking-Glass/Bridge.js/tree/main/src/library)
 - [Bevy custom projections](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/camera/custom_projection.rs)
 
 Per-device specification sources are included in `src/devices.json`.
