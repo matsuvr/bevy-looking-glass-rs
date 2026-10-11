@@ -267,14 +267,6 @@ fn setup(
         RenderLayers::layer(config.display_layer),
         ChildOf(window),
     ));
-    info!(
-        "Looking Glass array output: {} views, {}x{} per view, {}x{} virtual quilt; one shared scratch target and output blit, no quilt assembly",
-        layout.count(),
-        layout.view_width,
-        layout.view_height,
-        layout.width(),
-        layout.height()
-    );
 }
 
 fn sync_views(

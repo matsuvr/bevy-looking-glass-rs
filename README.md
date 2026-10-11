@@ -136,6 +136,16 @@ correctness. Physical Looking Glass panels and all-device compatibility remain
 unverified. See RusTuberV's [integration record](https://github.com/matsuvr/RusTuberV/blob/main/docs/looking-glass.md)
 for the historical workload and limitations.
 
+Extraction validation on Windows / RTX 4090 / Vulkan (2026-10-11): 21 library
+tests and all-target Clippy passed outside the RusTuberV workspace, with the
+registry's unpatched `bevy_window`. A separate minimal consumer rendered the
+model-free example using synthetic calibration: quilt, camera movement,
+interlacing, a completely black output for `pose: None`, and stop/exit succeeded.
+Screenshots were inspected; moving the camera changed the quilt pixels. Bevy
+logged late events for the closed window; the consumer exited with code 0.
+Physical-panel optics, macOS execution of this extracted crate, and performance
+across devices remain unverified.
+
 Use current stable Rust (minimum 1.99), Bevy 0.20, and normal Cargo checks:
 
 ```sh
