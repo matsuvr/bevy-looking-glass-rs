@@ -143,6 +143,8 @@ model-free example using synthetic calibration: quilt, camera movement,
 interlacing, a completely black output for `pose: None`, and stop/exit succeeded.
 Screenshots were inspected; moving the camera changed the quilt pixels. Bevy
 logged late events for the closed window; the consumer exited with code 0.
+The packaged crate also passed `cargo publish --dry-run`, including compilation
+with only normal dependencies; the WESL and device JSON are in the archive.
 Physical-panel optics, macOS execution of this extracted crate, and performance
 across devices remain unverified.
 
