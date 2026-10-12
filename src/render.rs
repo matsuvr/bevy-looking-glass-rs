@@ -3,7 +3,8 @@
 use crate::{
     ActiveOutput, LookingGlassControl, LookingGlassFrame, LookingGlassOptics, LookingGlassOutput,
     LookingGlassSource, LookingGlassStatus, LookingGlassSyncFocus, LookingGlassSystems,
-    LookingGlassView, LookingGlassViewCamera, MonitorInfo, QuiltMetadata, ViewGeneration, ViewPose,
+    LookingGlassView, LookingGlassViewCamera, MonitorInfo, OutputWindowPlan, QuiltMetadata,
+    ViewGeneration, ViewPose,
     generation_gpu::{ReprojectionUniform, Synthesis},
     optics::{InterlaceUniforms, view_pose},
     plan_output_window, plan_view_generation,
@@ -27,12 +28,15 @@ use bevy::render::view::{DebandDither, NoIndirectDrawing, Tonemapping};
 use bevy::render::{render_resource::AsBindGroup, storage::ShaderBuffer};
 use bevy::shader::ShaderRef;
 use bevy::sprite_render::{Material2d, Material2dPlugin};
-use bevy::window::{Monitor, WindowRef};
+use bevy::window::{Monitor, MonitorSelection, WindowCreated, WindowMode, WindowRef};
 
 #[derive(Component)]
 struct OutputMesh;
 #[derive(Component)]
 struct OutputWindow(Handle<InterlaceMaterial>);
+
+#[derive(Component)]
+struct PendingFullscreen(OutputWindowPlan);
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct InterlaceMaterial {
@@ -56,7 +60,12 @@ pub(super) fn install(app: &mut App) {
     view_array::install(app);
     crate::generation_gpu::install(app);
     app.add_plugins(Material2dPlugin::<InterlaceMaterial>::default())
-        .add_systems(Update, apply_request.in_set(LookingGlassSystems::Control))
+        .add_systems(
+            Update,
+            (finish_output_placement, apply_request)
+                .chain()
+                .in_set(LookingGlassSystems::Control),
+        )
         .add_systems(
             PostUpdate,
             (sync_views, sync_focus)
@@ -67,6 +76,31 @@ pub(super) fn install(app: &mut App) {
                 .before(CameraUpdateSystems)
                 .before(VisibilitySystems::VisibilityPropagate),
         );
+}
+
+fn finish_output_placement(
+    mut commands: Commands,
+    mut created: MessageReader<WindowCreated>,
+    mut windows: Query<(&mut Window, &PendingFullscreen)>,
+    monitors: Query<(), With<Monitor>>,
+    mut status: ResMut<LookingGlassStatus>,
+) {
+    for event in created.read() {
+        let Ok((mut window, pending)) = windows.get_mut(event.window) else {
+            continue;
+        };
+        if !monitors.contains(pending.0.monitor) {
+            status.error =
+                Some("selected Looking Glass monitor disappeared during window creation".into());
+            commands.entity(event.window).despawn();
+            continue;
+        }
+        // Initial fullscreen skips Bevy's position handling. Change only mode
+        // after native creation: changing position here can move the window
+        // again while the OS is entering fullscreen (especially with mixed DPI).
+        window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Entity(pending.0.monitor));
+        commands.entity(event.window).remove::<PendingFullscreen>();
+    }
 }
 
 fn apply_request(world: &mut World) {
@@ -290,6 +324,7 @@ fn setup(
         cells: buffers.add(ShaderBuffer::from(cells)),
     });
     let mut output_window = config.window.clone();
+    let mut placement = None;
     if let Some(display) = &config.display {
         let infos: Vec<_> = monitors
             .iter()
@@ -301,6 +336,10 @@ fn setup(
             .collect();
         if let Ok(plan) = plan_output_window(display, &infos) {
             plan.apply(&mut output_window);
+            // Let Winit create and initialize the native window before asking
+            // it to enter fullscreen on the selected monitor, on every OS.
+            output_window.mode = WindowMode::Windowed;
+            placement = Some(PendingFullscreen(plan));
         }
     }
     let window = commands
@@ -316,6 +355,9 @@ fn setup(
             Visibility::Visible,
         ))
         .id();
+    if let Some(placement) = placement {
+        commands.entity(window).insert(placement);
+    }
 
     if let LookingGlassSource::Quilt { image, metadata } = &config.source {
         commands.entity(window).insert(QuiltInput {
@@ -695,6 +737,136 @@ mod tests {
     use crate::{Calibration, LookingGlassConfig, ViewLayout as Layout};
     use bevy::window::PrimaryWindow;
 
+    fn placement_app() -> (App, Entity, Entity, Entity) {
+        let mut app = App::new();
+        app.init_resource::<LookingGlassStatus>()
+            .add_message::<WindowCreated>()
+            .add_systems(Update, finish_output_placement);
+        let monitor = app
+            .world_mut()
+            .spawn(Monitor {
+                name: Some("Looking Glass".into()),
+                physical_width: 1536,
+                physical_height: 2048,
+                physical_position: IVec2::new(-1536, 120),
+                refresh_rate_millihertz: None,
+                scale_factor: 1.0,
+                video_modes: Vec::new(),
+            })
+            .id();
+        let main = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        let plan = OutputWindowPlan {
+            monitor,
+            position: IVec2::new(-1536, 120),
+            size: UVec2::new(1536, 2048),
+        };
+        let mut window = Window::default();
+        plan.apply(&mut window);
+        window.mode = WindowMode::Windowed;
+        let output = app
+            .world_mut()
+            .spawn((
+                window,
+                PendingFullscreen(plan),
+                OutputWindow(Handle::default()),
+            ))
+            .id();
+        (app, monitor, main, output)
+    }
+
+    #[test]
+    fn fullscreen_waits_for_native_creation_and_preserves_reported_position_and_main_window() {
+        let (mut app, monitor, main, output) = placement_app();
+        app.update();
+        assert_eq!(
+            app.world().get::<Window>(output).unwrap().mode,
+            WindowMode::Windowed
+        );
+        // Native mixed-DPI creation can report a different initial position.
+        // Changing only mode avoids another move during the fullscreen transition.
+        app.world_mut().get_mut::<Window>(output).unwrap().position =
+            bevy::window::WindowPosition::At(IVec2::new(0, 72));
+        app.world_mut()
+            .resource_mut::<Messages<WindowCreated>>()
+            .write(WindowCreated { window: main });
+        app.update();
+        assert_eq!(
+            app.world().get::<Window>(output).unwrap().mode,
+            WindowMode::Windowed
+        );
+        app.world_mut()
+            .resource_mut::<Messages<WindowCreated>>()
+            .write(WindowCreated { window: output });
+        app.update();
+        let window = app.world().get::<Window>(output).unwrap();
+        assert_eq!(
+            window.mode,
+            WindowMode::BorderlessFullscreen(MonitorSelection::Entity(monitor))
+        );
+        assert_eq!(
+            window.position,
+            bevy::window::WindowPosition::At(IVec2::new(0, 72))
+        );
+        assert_eq!(window.physical_width(), 1536);
+        assert_eq!(window.physical_height(), 2048);
+        assert_eq!(window.resolution.scale_factor_override(), Some(1.0));
+        assert_eq!(
+            app.world().get::<Window>(main).unwrap().mode,
+            WindowMode::Windowed
+        );
+        assert!(app.world().get::<PendingFullscreen>(output).is_none());
+        app.world_mut().get_mut::<Window>(output).unwrap().mode = WindowMode::Windowed;
+        app.world_mut()
+            .resource_mut::<Messages<WindowCreated>>()
+            .write(WindowCreated { window: output });
+        app.update();
+        assert_eq!(
+            app.world().get::<Window>(output).unwrap().mode,
+            WindowMode::Windowed
+        );
+    }
+
+    #[test]
+    fn disconnected_pending_monitor_closes_output_without_fullscreening_the_main_screen() {
+        let (mut app, monitor, main, output) = placement_app();
+        app.world_mut().despawn(monitor);
+        app.world_mut()
+            .resource_mut::<Messages<WindowCreated>>()
+            .write(WindowCreated { window: output });
+        app.update();
+        assert!(app.world().get_entity(output).is_err());
+        assert!(
+            app.world()
+                .resource::<LookingGlassStatus>()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("disappeared")
+        );
+        assert_eq!(
+            app.world().get::<Window>(main).unwrap().mode,
+            WindowMode::Windowed
+        );
+    }
+
+    #[test]
+    fn closed_pending_output_ignores_late_native_creation() {
+        let (mut app, _, main, output) = placement_app();
+        app.world_mut().despawn(output);
+        app.world_mut()
+            .resource_mut::<Messages<WindowCreated>>()
+            .write(WindowCreated { window: output });
+        app.update();
+        assert_eq!(
+            app.world().get::<Window>(main).unwrap().mode,
+            WindowMode::Windowed
+        );
+        assert!(app.world().resource::<LookingGlassStatus>().error.is_none());
+    }
+
     #[test]
     fn stopping_from_settings_releases_the_window_and_its_views() {
         let mut app = App::new();
@@ -844,6 +1016,50 @@ mod tests {
             RenderLayers::layer(2),
             5,
         ))
+    }
+
+    #[test]
+    fn bridge_setup_creates_windowed_output_with_pending_selected_monitor() {
+        let mut app = scene_app(ViewGeneration::Full);
+        let position = IVec2::new(-32, 120);
+        let monitor = app
+            .world_mut()
+            .spawn(Monitor {
+                name: None,
+                physical_width: 32,
+                physical_height: 64,
+                physical_position: position,
+                refresh_rate_millihertz: None,
+                scale_factor: 1.0,
+                video_modes: Vec::new(),
+            })
+            .id();
+        app.world_mut().resource_mut::<ActiveOutput>().0.display = Some(crate::bridge::Display {
+            index: 77,
+            window_position: position,
+            serial: "TEST".into(),
+            name: "TEST".into(),
+            hardware_version: "TEST".into(),
+            calibration: serde_json::json!({
+                "pitch": {"value": 45.0}, "slope": {"value": -5.0}, "center": {"value": 0.5},
+                "DPI": {"value": 300.0}, "screenW": {"value": 32}, "screenH": {"value": 64},
+                "viewCone": {"value": 40.0}, "invView": {"value": 1},
+                "flipImageX": {"value": 0}, "flipImageY": {"value": 0}, "flipSubp": {"value": 0}
+            })
+            .to_string(),
+            quilt: None,
+        });
+        app.update();
+        let world = app.world_mut();
+        let (window, pending) = world
+            .query::<(&Window, &PendingFullscreen)>()
+            .single(world)
+            .unwrap();
+        assert_eq!(window.mode, WindowMode::Windowed);
+        assert_eq!(window.position, bevy::window::WindowPosition::At(position));
+        assert_eq!(window.physical_width(), 32);
+        assert_eq!(window.physical_height(), 64);
+        assert_eq!(pending.0.monitor, monitor);
     }
 
     fn scene_app(generation: ViewGeneration) -> App {
