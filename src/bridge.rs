@@ -40,6 +40,10 @@ pub struct Quilt {
 /// An attached light-field display and its unmodified factory calibration.
 #[derive(Clone, Debug)]
 pub struct Display {
+    /// Bridge device index (not an OS monitor index).
+    pub index: u32,
+    /// Physical desktop coordinates reported by Bridge, including negative origins.
+    pub window_position: bevy::math::IVec2,
     /// Serial of the physical unit, used for selection across reconnects.
     pub serial: String,
     /// Display name reported by Bridge.
@@ -164,6 +168,32 @@ fn parse_displays(response: &Value) -> Result<Vec<Display>, Error> {
             .filter(|name| !name.is_empty())
             .unwrap_or(serial);
         displays.push(Display {
+            index: device
+                .pointer("/value/index/value")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| {
+                    Error::Response(format!("{serial}: missing or invalid display index"))
+                })?,
+            window_position: {
+                #[derive(Deserialize)]
+                struct Coordinates {
+                    x: i32,
+                    y: i32,
+                }
+                let coords: Coordinates = serde_json::from_value(
+                    device
+                        .pointer("/value/windowCoords/value")
+                        .cloned()
+                        .ok_or_else(|| {
+                            Error::Response(format!("{serial}: missing window coordinates"))
+                        })?,
+                )
+                .map_err(|error| {
+                    Error::Response(format!("{serial} window coordinates: {error}"))
+                })?;
+                bevy::math::IVec2::new(coords.x, coords.y)
+            },
             serial: serial.to_owned(),
             name: name.to_owned(),
             hardware_version: hardware_version.to_owned(),

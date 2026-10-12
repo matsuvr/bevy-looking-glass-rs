@@ -5,7 +5,69 @@ use bevy::math::Vec3A;
 use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
 
-use super::LookingGlassError;
+use super::{LookingGlassError, ViewPose};
+
+/// World-space focus plane and the height visible on it. Near/far are positive
+/// camera-relative clipping distances; the focal plane looks down local -Z.
+#[derive(Clone, Copy, Debug)]
+pub struct HologramVolume {
+    /// Position/orientation of the displayed space's center; unit scale required.
+    pub focal_plane: Transform,
+    /// Visible vertical span on the focus plane in world units.
+    pub height: f32,
+    /// Near clipping distance from the computed camera.
+    pub near: f32,
+    /// Far clipping distance from the computed camera (infinity allowed).
+    pub far: f32,
+}
+
+/// Frame a volume using an ordinary vertical perspective field of view.
+pub fn view_pose_from_volume(
+    volume: &HologramVolume,
+    fov_y: f32,
+) -> Result<ViewPose, LookingGlassError> {
+    let distance = volume.height / (2.0 * (fov_y * 0.5).tan());
+    let mut transform = volume.focal_plane;
+    transform.translation += transform.rotation * Vec3::Z * distance;
+    let pose = ViewPose {
+        transform,
+        focus_distance: distance,
+        fov_y,
+        near: volume.near,
+        far: volume.far,
+    };
+    if !volume.height.is_finite() || volume.height <= 0.0 {
+        return Err(LookingGlassError::Invalid(
+            "volume height must be positive and finite",
+        ));
+    }
+    pose.validate()?;
+    Ok(pose)
+}
+
+impl ViewPose {
+    pub(crate) fn validate(self) -> Result<(), LookingGlassError> {
+        if !self.transform.translation.is_finite()
+            || !self.transform.rotation.is_finite()
+            || (self.transform.rotation.length_squared() - 1.0).abs() > 1e-4
+            || self.transform.scale != Vec3::ONE
+            || !self.focus_distance.is_finite()
+            || self.focus_distance <= 0.0
+            || !self.fov_y.is_finite()
+            || self.fov_y <= 0.0
+            || self.fov_y >= std::f32::consts::PI
+            || !self.near.is_finite()
+            || self.near <= 0.0
+            || self.far.is_nan()
+            || self.far <= self.near
+        {
+            return Err(LookingGlassError::Invalid(
+                "invalid view transform, focus, field of view or clipping planes",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Validated virtual quilt grid and per-view resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +127,8 @@ pub(super) struct InterlaceUniforms {
     pub screen: Vec4,
     pub grid: UVec4,
     pub flags: UVec4,
+    pub source: UVec4,
+    pub content: Vec4,
 }
 
 #[derive(Clone, Debug)]

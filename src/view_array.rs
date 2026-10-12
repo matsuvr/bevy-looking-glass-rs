@@ -7,25 +7,32 @@
 //! Do not defer the copies until after the camera loop: the scratch image has
 //! already been overwritten by the next view at that point.
 
+use bevy::asset::AssetId;
 use bevy::asset::RenderAssetUsages;
+use bevy::core_pipeline::schedule::camera_driver;
 use bevy::core_pipeline::{Core3d, Core3dSystems, upscaling::upscaling};
 use bevy::prelude::*;
 use bevy::render::RenderApp;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{
-    Extent3d, Origin3d, TexelCopyTextureInfo, TextureAspect, TextureDimension, TextureFormat,
-    TextureUsages, TextureViewDescriptor, TextureViewDimension,
+    Extent3d, Origin3d, TexelCopyTextureInfo, TextureDimension, TextureFormat, TextureUsages,
+    TextureViewDescriptor, TextureViewDimension,
 };
 use bevy::render::renderer::{RenderContext, ViewQuery};
+use bevy::render::renderer::{RenderGraph, RenderGraphSystems};
 use bevy::render::texture::GpuImage;
-use bevy::render::view::ViewTarget;
+use bevy::render::view::{ViewDepthStencilTexture, ViewTarget};
+use std::collections::HashSet;
 
-use crate::{LookingGlassRenderSet, ViewLayout as Layout};
+use crate::{
+    LookingGlassRenderSet, QuiltMetadata, ViewLayout as Layout,
+    generation_gpu::{self, Synthesis, ViewGpu},
+};
 
 // Use the same explicit SDR format for the scratch target and array. An image
 // target (unlike a window) is not subject to Bevy's BGRA swapchain conversion.
-// No Hdr or CompositingSpace component is installed on these cameras.
+// HDR intermediate textures are converted after tonemapping before storage.
 pub(super) const VIEW_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 
 #[derive(Component, Clone, ExtractComponent)]
@@ -33,11 +40,41 @@ pub(super) const VIEW_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 pub(super) struct ViewCamera {
     pub index: u32,
     pub array: Handle<Image>,
+    pub anchor: Option<AnchorTarget>,
+    pub last: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct AnchorTarget {
+    pub color: Handle<Image>,
+    pub depth: Handle<Image>,
+    pub layer: u32,
+}
+
+#[derive(Component, Clone, ExtractComponent)]
+#[extract_app(RenderApp)]
+pub(crate) struct QuiltInput {
+    pub image: Handle<Image>,
+    pub views: Handle<Image>,
+    pub metadata: QuiltMetadata,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct ReadyFrames(pub HashSet<AssetId<Image>>);
+
 pub(super) fn install(app: &mut App) {
-    app.add_plugins(ExtractComponentPlugin::<ViewCamera>::default());
+    app.add_plugins((
+        ExtractComponentPlugin::<ViewCamera>::default(),
+        ExtractComponentPlugin::<QuiltInput>::default(),
+    ));
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        render_app.init_resource::<ReadyFrames>().add_systems(
+            RenderGraph,
+            (reset_ready, import_quilts)
+                .chain()
+                .in_set(RenderGraphSystems::Begin)
+                .before(camera_driver),
+        );
         render_app.add_systems(
             Core3d,
             copy_view_to_array
@@ -48,18 +85,40 @@ pub(super) fn install(app: &mut App) {
     }
 }
 
-pub(super) fn image(layout: Layout) -> Image {
+pub(super) fn image(layout: Layout, view_count: u32) -> Image {
     let mut image = Image::new_uninit(
         Extent3d {
             width: layout.view_width,
             height: layout.view_height,
-            depth_or_array_layers: layout.count(),
+            depth_or_array_layers: view_count,
         },
         TextureDimension::D2,
         VIEW_FORMAT,
         RenderAssetUsages::RENDER_WORLD,
     );
     image.texture_descriptor.label = Some("looking_glass_view_array");
+    image.texture_descriptor.usage = TextureUsages::COPY_DST
+        | TextureUsages::COPY_SRC
+        | TextureUsages::TEXTURE_BINDING
+        | TextureUsages::RENDER_ATTACHMENT;
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::D2Array),
+        ..default()
+    });
+    image
+}
+
+pub(crate) fn anchor_image(size: UVec2, layers: u32, format: TextureFormat) -> Image {
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: layers,
+        },
+        TextureDimension::D2,
+        format,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     image.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
     image.texture_view_descriptor = Some(TextureViewDescriptor {
         dimension: Some(TextureViewDimension::D2Array),
@@ -68,31 +127,144 @@ pub(super) fn image(layout: Layout) -> Image {
     image
 }
 
-fn copy_view_to_array(
-    view: ViewQuery<(&ViewCamera, &ViewTarget)>,
+fn reset_ready(mut ready: ResMut<ReadyFrames>) {
+    ready.0.clear();
+}
+
+fn import_quilts(
+    inputs: Query<&QuiltInput>,
     images: Res<RenderAssets<GpuImage>>,
     mut context: RenderContext,
+    mut ready: ResMut<ReadyFrames>,
 ) {
-    let (camera, target) = view.into_inner();
-    let Some(array) = images.get(&camera.array) else {
-        // Assets can still be preparing on the first frame.
+    for input in &inputs {
+        let (Some(source), Some(array)) = (images.get(&input.image), images.get(&input.views))
+        else {
+            continue;
+        };
+        let Ok(size) = input.metadata.view_size() else {
+            continue;
+        };
+        for index in 0..input.metadata.view_count {
+            let Ok(origin) = input.metadata.tile_origin(index) else {
+                continue;
+            };
+            context.command_encoder().copy_texture_to_texture(
+                TexelCopyTextureInfo {
+                    origin: Origin3d {
+                        x: origin.x,
+                        y: origin.y,
+                        z: 0,
+                    },
+                    ..source.texture.as_image_copy()
+                },
+                TexelCopyTextureInfo {
+                    origin: Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: index,
+                    },
+                    ..array.texture.as_image_copy()
+                },
+                Extent3d {
+                    width: size.x,
+                    height: size.y,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        ready.0.insert(input.views.id());
+    }
+}
+
+fn copy_view_to_array(
+    view: ViewQuery<(
+        &ViewCamera,
+        &ViewTarget,
+        Option<&ViewDepthStencilTexture>,
+        Option<&Synthesis>,
+    )>,
+    mut gpu: ViewGpu,
+    mut ready: ResMut<ReadyFrames>,
+    mut context: RenderContext,
+) {
+    let (camera, target, depth, synthesis) = view.into_inner();
+    let Some(array) = gpu.images.get(&camera.array) else {
         return;
     };
     let source = target.main_texture();
-    context.command_encoder().copy_texture_to_texture(
-        source.as_image_copy(),
-        TexelCopyTextureInfo {
-            texture: &array.texture,
-            mip_level: 0,
-            origin: Origin3d {
-                x: 0,
-                y: 0,
-                z: camera.index,
+    if source.format() == VIEW_FORMAT {
+        context.command_encoder().copy_texture_to_texture(
+            source.as_image_copy(),
+            TexelCopyTextureInfo {
+                origin: Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: camera.index,
+                },
+                ..array.texture.as_image_copy()
             },
-            aspect: TextureAspect::All,
-        },
-        source.size(),
-    );
+            source.size(),
+        );
+    } else if !generation_gpu::convert(
+        target.main_texture_view(),
+        &array.texture,
+        camera.index,
+        &gpu.pipelines,
+        &gpu.cache,
+        &gpu.device,
+        &mut context,
+    ) {
+        return;
+    }
+    if let Some(anchor) = &camera.anchor {
+        let (Some(color), Some(saved_depth), Some(depth)) = (
+            gpu.images.get(&anchor.color),
+            gpu.images.get(&anchor.depth),
+            depth,
+        ) else {
+            return;
+        };
+        context.command_encoder().copy_texture_to_texture(
+            TexelCopyTextureInfo {
+                origin: Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: camera.index,
+                },
+                ..array.texture.as_image_copy()
+            },
+            TexelCopyTextureInfo {
+                origin: Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: anchor.layer,
+                },
+                ..color.texture.as_image_copy()
+            },
+            source.size(),
+        );
+        context.command_encoder().copy_texture_to_texture(
+            depth.texture().as_image_copy(),
+            TexelCopyTextureInfo {
+                origin: Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: anchor.layer,
+                },
+                ..saved_depth.texture.as_image_copy()
+            },
+            depth.texture().size(),
+        );
+    }
+    if let Some(synthesis) = synthesis
+        && !generation_gpu::synthesize(synthesis, &mut gpu, &mut context)
+    {
+        return;
+    }
+    if camera.last {
+        ready.0.insert(camera.array.id());
+    }
 }
 
 #[cfg(test)]
@@ -107,7 +279,7 @@ mod tests {
             view_width: 186,
             view_height: 341,
         };
-        let image = image(layout);
+        let image = image(layout, layout.count());
         assert_eq!(
             image.texture_descriptor.size,
             Extent3d {
@@ -121,7 +293,10 @@ mod tests {
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
         assert_eq!(
             image.texture_descriptor.usage,
-            TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING
+            TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::RENDER_ATTACHMENT
         );
         assert_eq!(
             image

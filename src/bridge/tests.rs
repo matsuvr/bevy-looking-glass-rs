@@ -10,6 +10,8 @@ use std::{
 
 fn device(raw: &str, model: &str) -> Value {
     json!({"value": {
+        "index": {"value": 7},
+        "windowCoords": {"value": {"x": -1440, "y": 120}},
         "hardwareVersion": {"value": model},
         "calibration": {"value": raw},
         "hwid": {"value": "TEST-DISPLAY"},
@@ -28,6 +30,11 @@ fn preserves_unknown_models_raw_optical_cells_and_bridge_layout() {
     assert_eq!(displays.len(), 1);
     assert_eq!(displays[0].hardware_version, "MODEL-NOT-IN-CATALOG");
     assert_eq!(displays[0].serial, "TEST-ONLY");
+    assert_eq!(displays[0].index, 7);
+    assert_eq!(
+        displays[0].window_position,
+        bevy::math::IVec2::new(-1440, 120)
+    );
     assert_eq!(displays[0].calibration, raw);
     let quilt = displays[0].quilt.as_ref().unwrap();
     assert_eq!(

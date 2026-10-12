@@ -9,6 +9,152 @@ use super::*;
 use crate::{ViewLayout as Layout, calibration::RawCalibration, optics::view_pose};
 use bevy::camera::CameraProjection;
 
+#[test]
+fn generation_has_exact_endpoints_coverage_and_nearest_references() {
+    for count in 2..70 {
+        for anchors in 2..=count {
+            let plan = plan_view_generation(
+                count,
+                ViewGeneration::DepthReprojection {
+                    rendered_views: anchors,
+                },
+            )
+            .unwrap();
+            assert_eq!(plan.rendered.len(), anchors as usize);
+            assert_eq!(plan.rendered.first(), Some(&0));
+            assert_eq!(plan.rendered.last(), Some(&(count - 1)));
+            let mut coverage = plan.rendered.clone();
+            for view in &plan.generated {
+                let left = plan.rendered[view.left_anchor as usize];
+                let right = plan.rendered[view.right_anchor as usize];
+                assert_eq!(view.right_anchor, view.left_anchor + 1);
+                assert!(left < view.index && view.index < right);
+                coverage.push(view.index);
+            }
+            coverage.sort_unstable();
+            assert_eq!(coverage, (0..count).collect::<Vec<_>>());
+        }
+    }
+    assert_eq!(
+        plan_view_generation(1, ViewGeneration::Full)
+            .unwrap()
+            .rendered,
+        [0]
+    );
+    assert!(plan_view_generation(0, ViewGeneration::Full).is_err());
+    for anchors in [0, 1, 5] {
+        assert!(
+            plan_view_generation(
+                4,
+                ViewGeneration::DepthReprojection {
+                    rendered_views: anchors
+                }
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn rotated_volume_frames_the_given_center_and_height() {
+    let volume = HologramVolume {
+        focal_plane: Transform::from_xyz(1.0, 2.0, -3.0).with_rotation(Quat::from_rotation_y(0.8)),
+        height: 3.5,
+        near: 0.2,
+        far: 80.0,
+    };
+    let pose = view_pose_from_volume(&volume, 0.7).unwrap();
+    let center = pose.transform.translation + *pose.transform.forward() * pose.focus_distance;
+    assert!(center.distance(volume.focal_plane.translation) < 1e-5);
+    assert!((2.0 * pose.focus_distance * (pose.fov_y * 0.5).tan() - volume.height).abs() < 1e-5);
+    assert_eq!(pose.transform.rotation, volume.focal_plane.rotation);
+    assert!(
+        view_pose_from_volume(
+            &HologramVolume {
+                height: 0.0,
+                ..volume
+            },
+            0.7
+        )
+        .is_err()
+    );
+    assert!(view_pose_from_volume(&volume, f32::NAN).is_err());
+}
+
+#[test]
+fn partial_quilt_preserves_bottom_left_order_and_edge_pixels() {
+    let metadata = QuiltMetadata {
+        image_size: UVec2::new(11, 9),
+        columns: 3,
+        rows: 2,
+        view_count: 5,
+        view_aspect: 0.75,
+    };
+    assert_eq!(metadata.view_size().unwrap(), UVec2::new(3, 4));
+    assert_eq!(metadata.tile_origin(0).unwrap(), UVec2::new(0, 5));
+    assert_eq!(metadata.tile_origin(2).unwrap(), UVec2::new(6, 5));
+    assert_eq!(metadata.tile_origin(3).unwrap(), UVec2::new(0, 1));
+    assert!(metadata.tile_origin(5).is_err());
+    assert_eq!(metadata.filename_suffix().unwrap(), "_qs3x2a0.75");
+    for invalid in [
+        QuiltMetadata {
+            columns: 0,
+            ..metadata
+        },
+        QuiltMetadata {
+            view_count: 7,
+            ..metadata
+        },
+        QuiltMetadata {
+            view_aspect: f32::NAN,
+            ..metadata
+        },
+        QuiltMetadata {
+            image_size: UVec2::ONE,
+            ..metadata
+        },
+    ] {
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[test]
+fn monitor_matching_uses_physical_coordinates_and_native_size_not_bridge_index() {
+    let display = bridge::Display {
+        index: 77,
+        window_position: IVec2::new(-1440, 120),
+        serial: "TEST".into(),
+        name: "TEST".into(),
+        hardware_version: "TEST".into(),
+        calibration: raw().to_string(),
+        quilt: None,
+    };
+    let wrong_size = MonitorInfo {
+        entity: Entity::from_bits(20),
+        position: display.window_position,
+        size: UVec2::new(720, 1280),
+    };
+    let right = MonitorInfo {
+        entity: Entity::from_bits(21),
+        position: display.window_position,
+        size: UVec2::new(1440, 2560),
+    };
+    assert!(plan_output_window(&display, &[wrong_size]).is_err());
+    let plan = plan_output_window(&display, &[wrong_size, right]).unwrap();
+    assert_eq!(plan.monitor, right.entity);
+    let mut window = Window::default();
+    plan.apply(&mut window);
+    assert_eq!(window.physical_width(), 1440);
+    assert_eq!(
+        window.position,
+        bevy::window::WindowPosition::At(display.window_position)
+    );
+    assert!(
+        matches!(window.mode, bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Entity(entity)) if entity == right.entity)
+    );
+    assert!(plan_output_window(&display, &[right, right]).is_err());
+}
+
 // Synthetic lens values for equation tests, not a usable device calibration.
 fn raw() -> serde_json::Value {
     serde_json::json!({

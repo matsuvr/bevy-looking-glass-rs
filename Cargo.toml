@@ -13,7 +13,8 @@ categories = ["rendering", "game-development"]
 include = ["src/**", "examples/**", "README.md", "LICENSE", "rust-toolchain.toml", "Cargo.lock"]
 
 [dependencies]
-bevy = { version = "0.20", default-features = false, features = ["std", "bevy_asset", "bevy_camera", "bevy_color", "bevy_core_pipeline", "bevy_image", "bevy_light", "bevy_mesh", "bevy_render", "bevy_shader", "bevy_sprite", "bevy_sprite_render", "bevy_window"] }
+bevy = { version = "0.20", default-features = false, features = ["std", "bevy_asset", "bevy_camera", "bevy_color", "bevy_core_pipeline", "bevy_image", "bevy_light", "bevy_mesh", "bevy_post_process", "bevy_render", "bevy_shader", "bevy_sprite", "bevy_sprite_render", "bevy_window"] }
+png = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -21,7 +22,7 @@ thiserror = "2"
 ureq = { version = "=3.4.2", default-features = false }
 
 [dev-dependencies]
-bevy = { version = "0.20", default-features = false, features = ["async_executor", "bevy_log", "bevy_pbr", "bevy_winit", "multi_threaded", "x11", "tonemapping_luts", "zstd_rust"] }
+bevy = { version = "0.20", default-features = false, features = ["async_executor", "bevy_log", "bevy_pbr", "bevy_winit", "multi_threaded", "x11", "tonemapping_luts", "zstd_rust", "png"] }
 
 [lints.rust]
 unsafe_code = "forbid"

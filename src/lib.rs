@@ -8,19 +8,36 @@
 
 pub mod bridge;
 mod calibration;
+mod capture;
 mod devices;
+mod generation;
+mod generation_gpu;
 mod optics;
+mod placement;
+mod postprocess;
 mod render;
+mod source;
 mod view_array;
 
 pub use calibration::{Calibration, parse_calibration};
+pub use capture::{
+    CaptureRequest, CapturedQuilt, QuiltCapture, QuiltCaptureResult, QuiltSaveError,
+};
 pub use devices::{DevicePreset, DisplayFormat, QuiltPreset, device_presets};
+pub use generation::{GeneratedView, ViewGeneration, ViewGenerationPlan, plan_view_generation};
 pub use optics::ViewLayout;
+pub use optics::{HologramVolume, view_pose_from_volume};
+pub use placement::{MonitorInfo, OutputWindowPlan, plan_output_window};
+pub use source::{LookingGlassFrame, LookingGlassSource, QuiltMetadata};
 
 use bevy::camera::{ClearColorConfig, Exposure, visibility::RenderLayers};
 use bevy::light::cluster::ClusterConfig;
 use bevy::prelude::*;
 use bevy::render::view::{DebandDither, Tonemapping};
+use bevy::render::{
+    RenderApp,
+    extract_component::{ExtractComponent, ExtractComponentPlugin},
+};
 use bevy::window::WindowResolution;
 
 /// Invalid calibration or output configuration.
@@ -41,8 +58,12 @@ impl Plugin for LookingGlassPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LookingGlassControl>()
             .init_resource::<LookingGlassView>()
+            .init_resource::<LookingGlassOptics>()
             .init_resource::<LookingGlassStatus>();
+        app.add_plugins(ExtractComponentPlugin::<LookingGlassViewCamera>::default());
         render::install(app);
+        postprocess::install(app);
+        capture::install(app);
     }
 }
 
@@ -130,9 +151,12 @@ impl LookingGlassOutput {
     }
 }
 
-/// Rendering policy for the plugin's scene cameras only. Output is SDR, MSAA off.
+/// Rendering policy for scene cameras. Final views are SDR, MSAA off.
 #[derive(Clone, Default)]
 pub struct ViewRenderSettings {
+    /// Use HDR linear intermediate buffers, needed by Bevy Bloom. Tonemapping
+    /// and final SDR conversion occur before storing each view in the array.
+    pub hdr: bool,
     /// Scene exposure.
     pub exposure: Exposure,
     /// Scene tonemapping (enable Bevy's LUT features when the selected method needs them).
@@ -150,6 +174,12 @@ pub struct ViewRenderSettings {
 /// Configuration for a single output window and its owned rendering assets.
 #[derive(Clone)]
 pub struct LookingGlassConfig {
+    /// Scene rendering, an external quilt, or an external view array.
+    pub source: LookingGlassSource,
+    /// Explicit scene view generation policy; transparent scenes should use Full.
+    pub view_generation: ViewGeneration,
+    /// Optional Bridge display for automatic native monitor placement.
+    pub display: Option<bridge::Display>,
     /// Transport and calibration.
     pub output: LookingGlassOutput,
     /// Scene layers visible to the multiview cameras.
@@ -171,6 +201,9 @@ impl LookingGlassConfig {
     ) -> Self {
         let screen = output.screen_size();
         Self {
+            source: LookingGlassSource::Scene,
+            view_generation: ViewGeneration::Full,
+            display: None,
             output,
             scene_layers,
             display_layer,
@@ -210,6 +243,48 @@ pub struct LookingGlassView {
     pub pose: Option<ViewPose>,
 }
 
+/// Live optical controls. Updating this resource never recreates output assets.
+#[derive(Resource, Default)]
+pub struct LookingGlassOptics {
+    depth_scale: Option<f32>,
+}
+
+impl LookingGlassOptics {
+    /// Override the initial baseline multiplier (zero removes parallax).
+    pub fn set_depth_scale(&mut self, value: f32) -> Result<(), LookingGlassError> {
+        if !value.is_finite() || value < 0.0 {
+            return Err(LookingGlassError::Invalid(
+                "depth_scale must be finite and nonnegative",
+            ));
+        }
+        self.depth_scale = Some(value);
+        Ok(())
+    }
+    /// Use the initial multiplier from the active output configuration again.
+    pub fn reset_depth_scale(&mut self) {
+        self.depth_scale = None;
+    }
+    /// Current live override; `None` uses the initial output configuration.
+    pub fn depth_scale(&self) -> Option<f32> {
+        self.depth_scale
+    }
+}
+
+/// A scene camera owned by a Looking Glass output. Attach Bloom, DepthOfField,
+/// or other per-view Bevy components using this marker after the Control set.
+#[derive(Component, Clone, Copy, Debug, ExtractComponent)]
+#[extract_app(RenderApp)]
+pub struct LookingGlassViewCamera {
+    /// Owning output/window entity.
+    pub output: Entity,
+    /// Optical view index, including gaps when generating intermediate views.
+    pub index: u32,
+}
+
+/// Keep an attached Bevy DepthOfField's focal distance on the hologram focus plane.
+#[derive(Component, Default)]
+pub struct LookingGlassSyncFocus;
+
 /// Pending output request. The last start/stop request in a frame wins.
 #[derive(Resource, Default)]
 pub struct LookingGlassControl {
@@ -243,6 +318,9 @@ pub struct LookingGlassStatus {
     pub quilt_preview: bool,
     /// Last start/stop error, cleared by a successful request.
     pub error: Option<String>,
+    /// Current invalid reference-pose error. Clears when the pose is valid or
+    /// absent; invalid poses disable scene views without recreating output.
+    pub pose_error: Option<String>,
 }
 
 #[cfg(test)]

@@ -5,6 +5,8 @@ struct Calibration {
     screen: vec4<f32>,
     grid: vec4<u32>,   // columns, rows, tile width, tile height
     flags: vec4<u32>,  // cell count, pattern, inverted views, flips | quilt preview
+    source: vec4<u32>, // active views, quilt image width/height including padding
+    content: vec4<f32>, // aspect-preserving content extent within the panel
 }
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> calibration: Calibration;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var view_textures: texture_2d_array<f32>;
@@ -32,9 +34,13 @@ fn quilt_preview(uv: vec2<f32>) -> vec4<f32> {
     // Present a virtual quilt without allocating or drawing a quilt texture.
     // Array layers retain optical view order: view zero is bottom-left.
     let grid = calibration.grid.xy;
-    let position = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * vec2<f32>(grid);
+    let pixel = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * vec2<f32>(calibration.source.yz);
+    let padding = f32(calibration.source.z - grid.y * calibration.grid.w);
+    let position = (pixel - vec2<f32>(0.0, padding)) / vec2<f32>(calibration.grid.zw);
+    if any(position < vec2<f32>(0.0)) || any(position >= vec2<f32>(grid)) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     let tile = min(vec2<u32>(floor(position)), grid - vec2<u32>(1u));
     let view = (grid.y - 1u - tile.y) * grid.x + tile.x;
+    if view >= calibration.source.x { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     let local_uv = view_uv(position - vec2<f32>(tile));
     let color = textureSampleLevel(view_textures, view_sampler, local_uv, i32(view), 0.0);
     return vec4<f32>(color.rgb, 1.0);
@@ -44,7 +50,7 @@ fn quilt_preview(uv: vec2<f32>) -> vec4<f32> {
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let flags = calibration.flags.w;
     if (flags & 16u) != 0u {
-        let uv = (mesh.uv - vec2<f32>(0.5)) / calibration.screen.zw + vec2<f32>(0.5);
+        let uv = (mesh.uv - vec2<f32>(0.5)) / (calibration.screen.zw * calibration.content.xy) + vec2<f32>(0.5);
         if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) { return vec4<f32>(1.0); }
         return vec4<f32>(textureSampleLevel(view_textures, view_sampler, view_uv(uv), 0, 0.0).rgb, 1.0);
     }
@@ -57,7 +63,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     var image_uv = mesh.uv;
     if (flags & 1u) != 0u { image_uv.x = 1.0 - image_uv.x; }
     if (flags & 2u) != 0u { image_uv.y = 1.0 - image_uv.y; }
-    let count = calibration.grid.x * calibration.grid.y;
+    image_uv = (image_uv - vec2<f32>(0.5)) / calibration.content.xy + vec2<f32>(0.5);
+    if any(image_uv < vec2<f32>(0.0)) || any(image_uv > vec2<f32>(1.0)) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+    let count = calibration.source.x;
     // Share cell lookup and offsets across RGB, but retain the original
     // coordinate addition order: reassociating phase arithmetic can change
     // the selected view near a lens boundary through f32 rounding.

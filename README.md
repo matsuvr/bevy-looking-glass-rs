@@ -2,7 +2,8 @@
 
 A small Bevy **0.20** plugin for direct Looking Glass display output. CPU code is
 safe Rust; GPU code is embedded WESL. No Looking Glass Bridge SDK, C/C++ bindings,
-DLL loading, JavaScript, or CPU image readback is added by this crate.
+DLL loading, or JavaScript is added by this crate. Live output stays on the GPU;
+optional quilt captures use asynchronous readback and pure Rust PNG encoding.
 
 Install and run Looking Glass Bridge and connect the display's video and USB
 data connections. `bridge::discover()` retrieves attached light-field displays,
@@ -25,7 +26,7 @@ use bevy_looking_glass::*;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let display = bridge::discover()?.into_iter().next()
         .ok_or("no calibrated Looking Glass is connected")?;
-    let quilt = display.quilt.ok_or("Bridge returned no default quilt")?;
+    let quilt = display.quilt.as_ref().ok_or("Bridge returned no default quilt")?;
     let layout = ViewLayout::new(
         quilt.columns,
         quilt.rows,
@@ -33,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         quilt.height.checked_div(quilt.rows).ok_or("zero quilt rows")?,
     )?;
     let calibration = parse_calibration(display.calibration.as_bytes())?;
-    let config = LookingGlassConfig::new(
+    let mut config = LookingGlassConfig::new(
         LookingGlassOutput::LightField {
             calibration,
             layout,
@@ -42,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         RenderLayers::layer(0), // scene
         1,                     // reserved exclusively for the output mesh
     );
+    config.display = Some(display); // match the native OS monitor and fullscreen
     let mut control = LookingGlassControl::default();
     control.start(config);
     App::new()
@@ -70,7 +72,7 @@ cargo run --example minimal -- /path/to/visual.json
 ```
 
 The example places a red cube in front of the focus plane, a green sphere on it,
-and a blue cube behind it. Arrow keys orbit/dolly. With the output window focused,
+and a blue cube behind it. Arrow keys orbit/dolly; PageUp/Down adjust depth live. With the output window focused,
 F10 toggles the quilt, F11 toggles fullscreen, and Escape stops output. Closing
 the main window closes the example's output. These policies are example code,
 not plugin behavior. The sample requires real calibration; synthetic calibration
@@ -86,7 +88,8 @@ Each HTTP request has a five-second timeout and bypasses HTTP proxies.
   The caller chooses its UI message; RusTuberV displays `Bridgeが見つかりません`.
 - `Ok(vec![])` means Bridge responded but no calibrated light-field unit was found.
 - Each `Display` contains its serial, name, hardware model, unmodified raw
-  `visual.json` string and optional default `Quilt` geometry. Select by serial
+  `visual.json` string, optional default `Quilt` geometry, Bridge device `index`,
+  and physical desktop `window_position` (including negative coordinates). Select by serial
   when multiple units are attached. Unknown model identifiers are accepted.
 - `Err(bridge::Error::Response(_))` reports failed or invalid Bridge responses.
 
@@ -112,11 +115,14 @@ the host; rendering does not require a running Bridge after acquisition.
 - Write `LookingGlassView::pose` each time your camera changes. The transform is
   world space, with unit scale and normalized rotation; focus distance is positive,
   `0 < fov_y < pi`, `0 < near < far`. `pose: None` disables the scene cameras and
-  hides old pixels. Panel aspect determines projection, not tile/preview aspect.
+  hides old scene pixels. Invalid poses are reported in `status.pose_error` and
+  recover when corrected, without restarting. External sources do not require a pose. Panel aspect
+  determines scene projection, not tile/preview aspect.
 - `scene_layers` selects the scene. Reserve `display_layer` for the interlace mesh;
   it must not intersect scene layers or any other application's camera layers.
 - `ViewRenderSettings` configures exposure, tonemapping, dithering, light clusters,
-  direct/indirect draws and clear color on owned view cameras only. Output is SDR
+  direct/indirect draws, HDR intermediates and clear color on owned view cameras.
+  Final output is SDR
   and MSAA is off. Enable Bevy LUT features for tonemappers that require them.
   HLD uses a white matte independently of the light-field clear color setting.
 - `config.window` is a Bevy `Window`: set title, position, monitor/mode, resolution
@@ -141,8 +147,133 @@ texture, assembly camera or tile sprites. View zero is bottom-left in a quilt.
 
 Raw lens values are normalized on the CPU; RGB stripes and cell-pattern modes
 0–4 use the embedded shader. Bridge is used only for optional device discovery;
-rendering runs directly in Bevy. No interpolation, view synthesis, cross-view GPU
-instancing or Bevy 0.19 compatibility is included.
+rendering runs directly in Bevy. Optional depth reprojection reduces the scene
+camera count; cross-view GPU instancing and Bevy 0.19 compatibility are not included.
+
+## Live framing and output placement
+
+`view_pose_from_volume(&HologramVolume, fov_y)` returns a validated `ViewPose`.
+The focal plane's transform specifies the center and orientation of the displayed
+space; `height` specifies its vertical span. Camera distance is
+`height / (2 * tan(fov_y / 2))`. Near/far are camera-relative clipping distances.
+Assign the result to `LookingGlassView::pose` to change framing without recreating
+cameras, textures or windows. `LookingGlassOptics::set_depth_scale(value)` changes
+the baseline live; `reset_depth_scale()` returns to the output's initial value.
+
+Set `config.display = Some(display)` using a selected Bridge display for native
+placement and borderless fullscreen. `plan_output_window` matches physical desktop
+position **and native resolution** to `MonitorInfo` entries from Bevy's monitors.
+Bridge's index is not an OS monitor index. Missing/ambiguous native matches report
+an error and preserve existing output. The plugin applies the plan when starting;
+it does not perform hot-plug polling. Leave `display` as `None` to use `config.window`.
+`cargo run --example minimal -- --bridge` demonstrates selected-display placement.
+
+## Per-view post-processing and frame access
+
+Every real scene camera has public `LookingGlassViewCamera { output, index }`.
+The output entity has `LookingGlassFrame { views, layout, metadata }`. Both are
+extracted into the render world too. The frame image is an sRGB SDR array in
+optical order; `metadata.view_count` is the active count, while `layout.count()`
+is the number of virtual quilt slots. Retaining its handle retains the image.
+
+Attach ordinary Bevy effects after `LookingGlassSystems::Control` in `Update`:
+
+```rust,ignore
+fn effects(mut commands: Commands, cameras: Query<Entity, Added<LookingGlassViewCamera>>) {
+    for camera in &cameras {
+        commands.entity(camera).insert((
+            Bloom::default(), DepthOfField::default(), LookingGlassSyncFocus,
+        ));
+    }
+}
+```
+
+Set `config.view_render.hdr = true` for Bloom. Enable Bevy's post-processing
+plugins (included in `DefaultPlugins`). The plugin captures each view after
+post-processing and tonemapping, converting float HDR buffers through an SDR
+render attachment before storing them. It never blurs the interlaced panel.
+`LookingGlassSyncFocus` synchronizes DoF with `ViewPose::focus_distance`.
+Bevy 0.20's DoF extractor rejects custom projections: a settings-only child gives
+its extractor a perspective FOV, then transfers Bevy's own uniform to the optical
+camera. The off-axis projection and its culling frustum remain intact. Removing
+DoF releases that child. No separate blur engine or Bevy patch is required.
+
+## Explicit depth view generation
+
+The default `config.view_generation = ViewGeneration::Full` draws every view.
+Select `ViewGeneration::DepthReprojection { rendered_views: n }` to draw only
+`n` evenly spaced anchors, including both ends of the calibrated cone. `n` must
+be between two and the output view count. `plan_view_generation` is a pure,
+fallible function returning rendered indices and neighboring anchor references.
+
+Anchor color is saved after post-processing and opaque depth before scratch is
+reused. A WESL pass reconstructs each source pixel in homogeneous coordinates,
+projects its footprint into each missing view, and depth-composites both neighboring
+anchors with reverse-Z testing. It does not blend adjacent images without geometry.
+Colors and depths use separate compact anchor arrays, avoiding simultaneous
+sampling/writing of the same array. Generated depth and uniform storage are reused.
+
+This is explicit opaque-scene reprojection. Transparent surfaces generally do not
+write matching depth; reflection/specular changes, blur extending over geometry,
+and surfaces hidden from both anchors can produce artifacts. Uncovered pixels
+stay black. Use `Full` for such scenes or increase the anchor count. Scene camera
+reduction is not a measured speedup guarantee: forward projection adds GPU work.
+No automatic scene classification or fallback is performed.
+
+## External quilts and arrays
+
+Set `config.source` to `LookingGlassSource::Quilt { image, metadata }` or
+`LookingGlassSource::ViewArray { image, metadata }`. The default is `Scene`.
+External sources create no scene cameras and require no `LookingGlassView::pose`.
+Start after the image is loaded in `Assets<Image]`. Images must be single-sampled,
+single-mip `Rgba8UnormSrgb` 2D textures available in the render world. Quilts need
+`COPY_SRC`; arrays need `COPY_SRC | TEXTURE_BINDING` and a `D2Array` view starting
+at layer/mip zero. Keep the handle and update that image for streaming content.
+
+`QuiltMetadata` records full image size, columns, rows, active `view_count` and
+original `view_aspect`. The tile size is integer division; it is independent of
+the original content aspect. View zero is bottom-left. Unused edge pixels lie at
+the top/right; inactive tiles are not sampled. Content is fit to the panel while
+preserving its original aspect. Quilts are copied tile-by-tile on the GPU;
+external arrays are sampled directly. Preview displays padding/inactive tiles black.
+
+```sh
+cargo run --example quilt_input -- visual.json quilt.png 8 6 48 0.75
+cargo run --example quilt_input -- visual.json quilt.png 8 6 48 0.75 --array
+```
+
+The second example path builds an external array once on the CPU to demonstrate
+that source variant. A renderer supplying its own array does not need this import
+step. F9 captures, F10 previews the virtual quilt, and Escape stops output.
+
+## Quilt PNG and fixed-time sequences
+
+Call `QuiltCapture::request(CaptureRequest { output, frame, time })` before its
+`PostUpdate` consumer (which runs after `SyncViews`). The request is extracted with
+the same main-world frame, including when Bevy pipelines rendering on another thread.
+GPU assets still preparing defer the request to the next available completed frame.
+Read `QuiltCaptureResult` messages for `Result<CapturedQuilt, String>`; the original
+frame number and time are preserved. Stopping/replacing output cancels pending
+unrendered requests. GPU map failures are reported as errors.
+
+Only requests allocate a quilt/readback buffer. The GPU copies active array layers
+to bottom-left-ordered quilt tiles, then asynchronously reads back. Alignment
+padding is removed; inactive tiles/edge pixels are zero. `CapturedQuilt::write_png`
+or `save_png` performs lossless encoding/file I/O when called by the host, preferably
+on a worker. `metadata.filename_suffix()` supplies `_qs8x6a0.75` naming. The suffix
+contains geometry/aspect, so preserve `view_count` separately for partial quilts.
+
+```sh
+cargo run --example capture_sequence -- visual.json output-directory
+cargo run --example capture_sequence -- visual.json output-directory --generated
+cargo run --example capture_sequence -- visual.json output-directory --hdr
+```
+
+The example freezes each simulation pose until its capture completes and advances
+using the frame number at 30 Hz, independently of wall-clock rendering/readback time.
+It writes four PNGs on workers and exits after encoding completes. `--hdr` attaches
+Bloom/DoF; `--generated` renders three of eight views. There is no video encoder
+or FFmpeg dependency.
 
 ## Catalog and HLD
 
@@ -187,6 +318,24 @@ a connected Portrait's calibration and 3360-square, 8 x 6 default quilt. The sam
 source passed an isolated `aarch64-apple-darwin` check. Checking the full Bevy crate
 for that target from Windows stopped at Bevy's `blake3` dependency because the
 Mac C compiler was unavailable. Mac hardware execution remains unverified.
+
+High-priority feature validation (2026-10-12): 36 library tests and all-target
+Clippy with warnings denied passed, as did formatting, whitespace checks and
+`cargo publish --dry-run` (packaged normal dependencies, no upload). GPU execution
+on Windows / RTX 4090 / NVIDIA 617.14 / Vulkan produced four PNG frames with
+full rendering, three-anchor depth generation, HDR Bloom/DoF and combined
+HDR/generation. A render-world check found Bevy DoF uniforms on all three anchors
+while preserving their custom projections. The combined sequence produced four
+distinct files whose SHA256 values matched a repeated run at the same frame times.
+
+External quilt and array consumers with five active views in a 3 x 2 grid at
+11 x 9 pixels passed exact RGBA readback comparisons, including unused top/right
+pixels and an inactive tile, without a scene pose. Frame/time identity was retained.
+PNG results from generation and HDR were inspected. Validation used synthetic
+calibration on ordinary desktop windows. Physical optics, automatic fullscreen
+placement on a connected panel, macOS execution and performance gains remain
+unmeasured. The reprojection's disocclusion/transparent-material limitations above
+are part of its explicit mode contract.
 
 Use current stable Rust (minimum 1.99), Bevy 0.20, and normal Cargo checks:
 

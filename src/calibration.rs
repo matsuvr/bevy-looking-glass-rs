@@ -177,6 +177,8 @@ impl Calibration {
                 layout.view_height,
             ),
             flags: self.flags,
+            source: UVec4::new(layout.count(), layout.width(), layout.height(), 0),
+            content: Vec4::ONE,
         }
     }
 }

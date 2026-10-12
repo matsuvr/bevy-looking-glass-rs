@@ -1,5 +1,5 @@
 //! A model-free scene: foreground cube, focus-plane sphere, background cube.
-//! Usage: cargo run --example minimal -- /path/to/visual.json
+//! Usage: cargo run --example minimal -- /path/to/visual.json (or --bridge)
 #![forbid(unsafe_code)]
 
 use bevy::camera::visibility::RenderLayers;
@@ -14,7 +14,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args_os()
         .nth(1)
         .ok_or("usage: minimal /path/to/visual.json")?;
-    let calibration = parse_calibration(&std::fs::read(path)?)?;
+    let display = if path == "--bridge" {
+        Some(
+            bridge::discover()?
+                .into_iter()
+                .next()
+                .ok_or("no Looking Glass display is connected")?,
+        )
+    } else {
+        None
+    };
+    let calibration = if let Some(display) = &display {
+        parse_calibration(display.calibration.as_bytes())?
+    } else {
+        parse_calibration(&std::fs::read(path)?)?
+    };
     let screen = calibration.screen_size();
     let mut config = LookingGlassConfig::new(
         LookingGlassOutput::LightField {
@@ -28,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A smaller window is a preview only; fullscreen on the native panel for optics.
     config.window.resolution =
         WindowResolution::new(screen.x / 2, screen.y / 2).with_scale_factor_override(1.0);
+    config.display = display;
     config.window.title = "Looking Glass — F10 quilt / F11 fullscreen / Escape stop".into();
     let mut control = LookingGlassControl::default();
     control.start(config);
@@ -41,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Update,
             (
                 move_camera,
+                live_optics,
                 output_keys.before(LookingGlassSystems::Control),
             ),
         )
@@ -85,7 +101,9 @@ fn setup(
         },
         Transform::from_xyz(2.0, 4.0, 4.0),
     ));
-    info!("Arrow keys: orbit/dolly; F10: quilt; F11: fullscreen; Escape: stop output");
+    info!(
+        "Arrow keys: orbit/dolly; PageUp/Down: live depth; F10: quilt; F11: fullscreen; Escape: stop output"
+    );
 }
 
 fn move_camera(
@@ -108,6 +126,21 @@ fn move_camera(
         .looking_at(Vec3::ZERO, Vec3::Y);
     for mut transform in &mut preview {
         *transform = pose.transform;
+    }
+}
+
+fn live_optics(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut optics: ResMut<LookingGlassOptics>,
+) {
+    let direction =
+        f32::from(keys.pressed(KeyCode::PageUp)) - f32::from(keys.pressed(KeyCode::PageDown));
+    if direction != 0.0 {
+        let value = (optics.depth_scale().unwrap_or(1.0) + direction * time.delta_secs()).max(0.0);
+        if let Err(error) = optics.set_depth_scale(value) {
+            error!("{error}");
+        }
     }
 }
 
