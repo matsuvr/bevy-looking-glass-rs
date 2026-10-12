@@ -164,8 +164,14 @@ Set `config.display = Some(display)` using a selected Bridge display for native
 placement and borderless fullscreen. `plan_output_window` matches physical desktop
 position **and native resolution** to `MonitorInfo` entries from Bevy's monitors.
 Bridge's index is not an OS monitor index. Missing/ambiguous native matches report
-an error and preserve existing output. The plugin applies the plan when starting;
-it does not perform hot-plug polling. Leave `display` as `None` to use `config.window`.
+an error and preserve existing output. On Windows and macOS the plugin first
+creates a window at the planned native size, then requests fullscreen on the
+selected monitor after Bevy reports native window creation. This avoids entering
+fullscreen on the primary screen during creation, including mixed-DPI desktops.
+It changes only the output window's mode at that point, so an OS-reported position
+cannot trigger another move during the fullscreen transition. If the selected
+monitor disappears before creation completes, output closes with an error.
+The plugin does not perform hot-plug polling. Leave `display` as `None` to use `config.window`.
 `cargo run --example minimal -- --bridge` demonstrates selected-display placement.
 
 ## Per-view post-processing and frame access
