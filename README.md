@@ -16,8 +16,10 @@ users to find or create a calibration file.
 ```toml
 [dependencies]
 bevy = "0.20"
-bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs" }
+bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.0" }
 ```
+
+Version 0.1.0 is a GitHub source release. It is not published to crates.io.
 
 ```rust,no_run
 use bevy::{prelude::*, camera::visibility::RenderLayers};
@@ -300,8 +302,8 @@ Extracted from [RusTuberV a198c1b](https://github.com/matsuvr/RusTuberV/tree/a19
 under MIT, preserving the array/copy/interlace path. Previous RusTuberV measurements
 of roughly 60 fps concern a specified Windows desktop workload with synthetic
 calibration. They do not guarantee plugin performance or physical-panel optical
-correctness. Physical Looking Glass panels and all-device compatibility remain
-unverified. See RusTuberV's [integration record](https://github.com/matsuvr/RusTuberV/blob/main/docs/looking-glass.md)
+correctness. The dated checks below describe their own scope; they do not establish
+all-device compatibility. See RusTuberV's [integration record](https://github.com/matsuvr/RusTuberV/blob/main/docs/looking-glass.md)
 for the historical workload and limitations.
 
 Extraction validation on Windows / RTX 4090 / Vulkan (2026-10-11): 21 library
@@ -353,11 +355,25 @@ cargo package --list
 cargo publish --dry-run
 ```
 
+Fullscreen fix review on Windows (2026-10-13, Rust 1.99.0,
+`x86_64-pc-windows-msvc`): all 40 library tests, all three example builds,
+all-target Clippy with warnings denied, formatting and whitespace checks passed.
+The tests cover deferred native creation, selected-monitor removal, stopped
+outputs, duplicate/late events and primary-window isolation. This review did
+not rerun physical-panel output, camera/NDI concurrency or performance checks.
+The earlier macOS Portrait placement and avatar checks are recorded in
+[PR #2](https://github.com/matsuvr/bevy-looking-glass-rs/pull/2); those results
+were reported by that PR and were not repeated during this Windows review.
+
 ## License and provenance
 
-MIT; see [LICENSE](LICENSE). Copyright notices from RusTuberV are retained.
-The code directly implements geometry and pixel-mapping equations; manufacturer
-SDK binaries and JavaScript source are not redistributed.
+The project source is licensed under **MIT**; see [LICENSE](LICENSE).
+Copyright notices from RusTuberV are retained. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for extraction provenance,
+reference-material licenses, dependency licenses and distribution boundaries.
+Dependencies and separately installed Looking Glass software retain their own
+licenses. The code directly implements geometry and pixel-mapping equations;
+manufacturer SDK binaries and JavaScript source are not redistributed.
 
 - [Raw calibration and quilt conventions](https://github.com/Looking-Glass/looking-glass-webxr/blob/b44ed27fea197f28fbe4cb669bc350d141a9f8b1/src/LookingGlassConfig.ts)
 - [Quilt specifications](https://lfdocs.lookingglassfactory.com/keyconcepts/quilts)
