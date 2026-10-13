@@ -52,21 +52,19 @@ needed for rendering when the host supplies its own calibration bytes.
 
 ## Installation
 
-The existing [v0.1.0 release](https://github.com/matsuvr/bevy-looking-glass-rs/releases/tag/v0.1.0)
-is a **GitHub source release**, not a crates.io release. This documentation update
-does not publish the crate. Until a registry release is announced, use:
+Add the crate from crates.io:
 
 ```toml
 [dependencies]
 bevy = "0.20"
-bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.0" }
+bevy_looking_glass = "0.1.1"
 ```
 
-After a `0.1.x` release has actually been published on crates.io, replace the Git
-entry with the following registry entry (not an alternative to use before then):
+Alternatively, use the matching
+[GitHub source release](https://github.com/matsuvr/bevy-looking-glass-rs/releases/tag/v0.1.1):
 
 ```toml
-bevy_looking_glass = "0.1"
+bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.1" }
 ```
 
 ## First run

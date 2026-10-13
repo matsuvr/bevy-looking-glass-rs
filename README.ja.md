@@ -50,22 +50,19 @@ Bevyのウィンドウバックエンドと、シーン・効果に必要なfeat
 
 ## 導入
 
-既存の[v0.1.0リリース](https://github.com/matsuvr/bevy-looking-glass-rs/releases/tag/v0.1.0)は
-**GitHubでのソース公開**であり、crates.ioのリリースではありません。
-このドキュメント更新自体はcrateを公開しません。
-レジストリへの公開が案内されるまでは、次のGit依存を使ってください。
+crates.ioのcrateを追加します。
 
 ```toml
 [dependencies]
 bevy = "0.20"
-bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.0" }
+bevy_looking_glass = "0.1.1"
 ```
 
-`0.1.x`が実際にcrates.ioへ公開された後は、Git依存を次の指定へ置き換えられます。
-公開前に使用するための代替指定ではありません。
+対応する[GitHubソースリリース](https://github.com/matsuvr/bevy-looking-glass-rs/releases/tag/v0.1.1)
+をGit依存で使うこともできます。
 
 ```toml
-bevy_looking_glass = "0.1"
+bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.1" }
 ```
 
 ## 最初の実行

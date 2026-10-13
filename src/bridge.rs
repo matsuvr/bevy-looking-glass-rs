@@ -1,5 +1,5 @@
 //! Device discovery through the official Bridge.js HTTP protocol on any OS.
-//! See https://github.com/Looking-Glass/Bridge.js/tree/main/src/library.
+//! See <https://github.com/Looking-Glass/Bridge.js/tree/main/src/library>.
 
 use serde::Deserialize;
 use serde_json::{Value, json};

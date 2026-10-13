@@ -1,17 +1,19 @@
 # Changelog / 変更履歴
 
-## Unreleased / 未リリース
+## 0.1.1 — 2026-10-13 JST
 
 Documentation only: English/Japanese READMEs and integration guides, a bilingual
 rustdoc landing page with complete examples, separated validation history,
 publication instructions, and Cargo documentation/package-inclusion metadata.
-No runtime implementation, public API, dependency versions, license, or release
-tag changes. This entry does not indicate publication to crates.io.
+No runtime implementation, public API, dependency versions, or license changes.
+Prepared for the first crates.io release and matching GitHub source release;
+the existing `v0.1.0` tag is unchanged.
 
 ドキュメントのみ：日英README・利用ガイド、完全な例を含む日英併記のrustdocトップ、
 独立した検証履歴、公開手順、Cargoのドキュメント・同梱設定を整備しました。
-実行時実装、公開API、依存バージョン、ライセンス、リリースタグは変更しません。
-この項目はcrates.ioへの公開を示しません。
+実行時実装、公開API、依存バージョン、ライセンスは変更しません。
+初回のcrates.io公開と対応するGitHubソースリリースに向けて整備しました。
+既存の`v0.1.0`タグは変更しません。
 
 ## 0.1.0 — 2026-10-13 JST (2026-10-12 UTC)
 

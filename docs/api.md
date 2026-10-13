@@ -17,13 +17,13 @@ Bevy 0.20向けの非公式・実験的プラグインです。CPU側はsafe Rus
 
 Use Rust 1.99 or newer and `bevy = "0.20"` with default features in a desktop
 application. The [README](https://github.com/matsuvr/bevy-looking-glass-rs/blob/main/README.md)
-explains the Git source release and the registry dependency to use after publication.
+explains the registry dependency and the matching Git source release.
 Install/start Bridge and connect the panel's video and USB data cables.
 Discovery below runs before the event loop; in an interactive application, run
 this synchronous query on a worker instead of blocking an update system.
 
 Rust 1.99以上と、デフォルトfeatureを有効にした`bevy = "0.20"`を使うデスクトップアプリの例です。
-Git版と公開後のレジストリ指定は[日本語README](https://github.com/matsuvr/bevy-looking-glass-rs/blob/main/README.ja.md)
+レジストリ指定と対応するGit版は[日本語README](https://github.com/matsuvr/bevy-looking-glass-rs/blob/main/README.ja.md)
 を参照してください。Bridgeをインストール・起動し、映像ケーブルとUSBデータケーブルを接続します。
 ここではイベントループ開始前に同期的に検出します。動作中のアプリではワーカーで実行してください。
 
