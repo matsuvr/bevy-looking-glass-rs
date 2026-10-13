@@ -6,6 +6,8 @@ Bevyの3DシーンをLooking Glassへ表示する、**非公式・実験的な�
 小さく直接的な実装を目指す個人の研究プロジェクトであり、サポートは約束しません。
 公式Looking Glass SDKではなく、全機種での動作を保証するものでもありません。
 
+利用にはお使いのPC/MacにLooking Glass Bridgeがインストールされている必要があります。
+
 このcrateのCPU側実装はsafe Rust、GPUシェーダーは埋め込みWESLです。
 Looking Glass Bridge SDK、C/C++バインディング、JavaScriptをリンク・再配布しません。
 任意の機器検出機能では、**別途インストールされたLooking Glass Bridge**の
@@ -128,7 +130,7 @@ PR #2には別途、macOS・Apple M4・Portraitでの配置と、実パネルに
 ## ライセンスとプロジェクトの方針
 
 プロジェクトのソースは[MIT](https://github.com/matsuvr/bevy-looking-glass-rs/blob/main/LICENSE)です。
-RusTuberVからの由来、参照資料・依存関係のライセンスは
+参照資料・依存関係のライセンスは
 [第三者告知](https://github.com/matsuvr/bevy-looking-glass-rs/blob/main/THIRD_PARTY_NOTICES.md)を参照してください。
 依存ライブラリと別途インストールするLooking Glassソフトウェアには、それぞれの条件が適用されます。
 SDKバイナリー、工場出荷時の校正ファイル、モデル、フォントは同梱しません。
