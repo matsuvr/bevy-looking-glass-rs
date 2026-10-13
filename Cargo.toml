@@ -7,10 +7,11 @@ license = "MIT"
 authors = ["matsuvr", "RusTuberV contributors"]
 description = "Direct Looking Glass display output for Bevy, using Rust and WESL without the Bridge SDK"
 repository = "https://github.com/matsuvr/bevy-looking-glass-rs"
+documentation = "https://docs.rs/bevy_looking_glass"
 readme = "README.md"
 keywords = ["bevy", "looking-glass", "light-field", "holographic"]
 categories = ["rendering", "game-development"]
-include = ["src/**", "examples/**", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "rust-toolchain.toml", "Cargo.lock"]
+include = ["src/**", "examples/**", "README.md", "README.ja.md", "docs/**", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "rust-toolchain.toml", "Cargo.lock"]
 
 [dependencies]
 bevy = { version = "0.20", default-features = false, features = ["std", "bevy_asset", "bevy_camera", "bevy_color", "bevy_core_pipeline", "bevy_image", "bevy_light", "bevy_mesh", "bevy_post_process", "bevy_render", "bevy_shader", "bevy_sprite", "bevy_sprite_render", "bevy_window"] }
