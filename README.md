@@ -57,14 +57,14 @@ Add the crate from crates.io:
 ```toml
 [dependencies]
 bevy = "0.20"
-bevy_looking_glass = "0.1.1"
+bevy_looking_glass = "0.1.2"
 ```
 
 Alternatively, use the matching
-[GitHub source release](https://github.com/matsuvr/bevy-looking-glass-rs/releases/tag/v0.1.1):
+[GitHub source tag](https://github.com/matsuvr/bevy-looking-glass-rs/tree/v0.1.2):
 
 ```toml
-bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.1" }
+bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.2" }
 ```
 
 ## First run

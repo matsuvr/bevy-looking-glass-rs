@@ -57,14 +57,14 @@ crates.ioのcrateを追加します。
 ```toml
 [dependencies]
 bevy = "0.20"
-bevy_looking_glass = "0.1.1"
+bevy_looking_glass = "0.1.2"
 ```
 
-対応する[GitHubソースリリース](https://github.com/matsuvr/bevy-looking-glass-rs/releases/tag/v0.1.1)
+対応する[GitHubのソースタグ](https://github.com/matsuvr/bevy-looking-glass-rs/tree/v0.1.2)
 をGit依存で使うこともできます。
 
 ```toml
-bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.1" }
+bevy_looking_glass = { git = "https://github.com/matsuvr/bevy-looking-glass-rs", tag = "v0.1.2" }
 ```
 
 ## 最初の実行

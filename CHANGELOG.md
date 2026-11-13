@@ -1,5 +1,13 @@
 # Changelog / 変更履歴
 
+## 0.1.2 — 2026-11-13 JST
+
+- Bridge-placed outputs reconnect to the same display by serial after a temporary disconnect, including when its desktop position changes. Stopping output cancels the retry.
+- If a visible output repeatedly fails to acquire a presentation frame, the plugin recreates that window’s GPU surface while retaining the scene cameras and view textures.
+
+- Bridgeで配置した出力は、一時切断後に同じシリアル番号の機器へ自動復帰します。再接続時の表示位置の変更にも対応し、出力を停止すると再試行を取り消します。
+- 表示中の出力でフレームを繰り返し取得できなくなった場合は、視点カメラとテクスチャを保持したまま、そのウィンドウの描画サーフェスを作り直します。
+
 ## 0.1.1 — 2026-10-13 JST
 
 Documentation only: English/Japanese READMEs and integration guides, a bilingual
