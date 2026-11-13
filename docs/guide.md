@@ -107,9 +107,20 @@ Missing or ambiguous matches are reported rather than choosing another monitor.
 On Windows and macOS, the plugin first creates a window at the planned native
 size, then requests borderless fullscreen on that monitor after `WindowCreated`.
 Only the mode changes during this transition. This avoids initial fullscreen on
-the primary monitor on mixed-DPI desktops. If the selected monitor disappears
-before creation completes, the pending output closes with an error. There is no
-periodic hot-plug polling or automatic reconnection policy.
+the primary monitor on mixed-DPI desktops.
+
+If the selected monitor disappears during setup or playback, the plugin releases
+the output window and its cameras. While waiting, `LookingGlassStatus::window`
+is `None` and `error` reports the reason. A single background worker retries Bridge
+discovery with delays from one to ten seconds. Output resumes when the original
+serial and its current native monitor match, even if the desktop position has
+changed. Use the new window entity from `LookingGlassStatus`. Calling `stop()`
+cancels recovery, including a pending reply. Healthy playback makes no Bridge
+requests.
+
+If a visible output repeatedly fails to acquire a GPU presentation frame while
+its monitor is still present, the plugin asks Bevy to recreate that window’s
+presentation surface. The scene cameras and view textures stay allocated.
 
 Leave `config.display = None` to use the host's `config.window` settings directly:
 title, position, monitor/mode, size, and presentation policy. The constructor uses

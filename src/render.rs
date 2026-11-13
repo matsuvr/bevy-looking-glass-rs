@@ -1,5 +1,10 @@
 //! Bevy resource/entity effects for the optional output.
 
+use self::reconnect::{Reconnect, check_connection};
+
+mod reconnect;
+mod surface;
+
 use crate::{
     ActiveOutput, LookingGlassControl, LookingGlassFrame, LookingGlassOptics, LookingGlassOutput,
     LookingGlassSource, LookingGlassStatus, LookingGlassSyncFocus, LookingGlassSystems,
@@ -35,6 +40,14 @@ struct OutputMesh;
 #[derive(Component)]
 struct OutputWindow(Handle<InterlaceMaterial>);
 
+// This survives removal of the OS monitor and its associated window.
+#[derive(Resource)]
+struct SelectedMonitor {
+    window: Entity,
+    plan: OutputWindowPlan,
+    closing: bool,
+}
+
 #[derive(Component)]
 struct PendingFullscreen(OutputWindowPlan);
 
@@ -58,11 +71,17 @@ impl Material2d for InterlaceMaterial {
 pub(super) fn install(app: &mut App) {
     embedded_asset!(app, "interlace.wesl");
     view_array::install(app);
+    surface::install(app);
     crate::generation_gpu::install(app);
     app.add_plugins(Material2dPlugin::<InterlaceMaterial>::default())
         .add_systems(
             Update,
-            (finish_output_placement, apply_request)
+            (
+                apply_request,
+                check_connection,
+                finish_output_placement,
+                sync_status,
+            )
                 .chain()
                 .in_set(LookingGlassSystems::Control),
         )
@@ -83,16 +102,12 @@ fn finish_output_placement(
     mut created: MessageReader<WindowCreated>,
     mut windows: Query<(&mut Window, &PendingFullscreen)>,
     monitors: Query<(), With<Monitor>>,
-    mut status: ResMut<LookingGlassStatus>,
 ) {
     for event in created.read() {
         let Ok((mut window, pending)) = windows.get_mut(event.window) else {
             continue;
         };
         if !monitors.contains(pending.0.monitor) {
-            status.error =
-                Some("selected Looking Glass monitor disappeared during window creation".into());
-            commands.entity(event.window).despawn();
             continue;
         }
         // Initial fullscreen skips Bevy's position handling. Change only mode
@@ -103,18 +118,18 @@ fn finish_output_placement(
     }
 }
 
-fn apply_request(world: &mut World) {
+fn apply_request(world: &mut World, outputs: &mut QueryState<Entity, With<OutputWindow>>) {
     let Some(mut control) = world.get_resource_mut::<LookingGlassControl>() else {
         return;
     };
     let pending = control.pending.take();
-    let preview = control.quilt_preview;
-    let windows: Vec<Entity> = world
-        .query_filtered::<Entity, With<OutputWindow>>()
-        .iter(world)
-        .collect();
-    if windows.is_empty() {
-        world.remove_resource::<ActiveOutput>();
+    let window = outputs.iter(world).next();
+    if window.is_none()
+        && !world.contains_resource::<SelectedMonitor>()
+        && world.contains_resource::<ActiveOutput>()
+    {
+        // The host or the native close button closed the window.
+        clear_output(world, None);
     }
     if let Some(request) = pending {
         let result = request.as_ref().map_or(Ok(()), |config| {
@@ -163,47 +178,59 @@ fn apply_request(world: &mut World) {
         });
         match result {
             Ok(()) => {
-                for window in windows {
-                    world.despawn(window);
-                }
-                world.remove_resource::<ActiveOutput>();
+                clear_output(world, window);
+                world.remove_resource::<Reconnect>();
                 world.resource_mut::<LookingGlassStatus>().error = None;
                 if let Some(config) = request {
-                    world.insert_resource(ActiveOutput(config));
-                    if let Err(error) = world.run_system_cached(setup) {
-                        world.remove_resource::<ActiveOutput>();
-                        world.resource_mut::<LookingGlassStatus>().error = Some(error.to_string());
-                    }
+                    start_output(world, config);
                 }
             }
             Err(error) => world.resource_mut::<LookingGlassStatus>().error = Some(error),
         }
     }
-    let window = world
-        .query_filtered::<Entity, With<OutputWindow>>()
-        .iter(world)
-        .next();
-    let light_field = world
-        .get_resource::<ActiveOutput>()
+}
+
+fn clear_output(world: &mut World, window: Option<Entity>) {
+    if let Some(entity) = window {
+        world.despawn(entity);
+    }
+    world.remove_resource::<ActiveOutput>();
+    world.remove_resource::<SelectedMonitor>();
+}
+
+fn start_output(world: &mut World, config: crate::LookingGlassConfig) {
+    world.insert_resource(ActiveOutput(config));
+    if let Err(error) = world.run_system_cached(setup) {
+        clear_output(world, None);
+        world.resource_mut::<LookingGlassStatus>().error = Some(error.to_string());
+    }
+}
+
+fn sync_status(
+    control: Res<LookingGlassControl>,
+    mut status: ResMut<LookingGlassStatus>,
+    config: Option<Res<ActiveOutput>>,
+    windows: Query<(Entity, &OutputWindow)>,
+    mut materials: Option<ResMut<Assets<InterlaceMaterial>>>,
+) {
+    let light_field = config
         .is_some_and(|config| matches!(config.0.output, LookingGlassOutput::LightField { .. }));
-    let material = window
-        .and_then(|entity| world.get::<OutputWindow>(entity))
-        .map(|o| o.0.clone());
-    if let Some(handle) = material
-        && let Some(mut materials) = world.get_resource_mut::<Assets<InterlaceMaterial>>()
-        && materials.get(&handle).is_some_and(|material| {
+    let preview = control.quilt_preview;
+    let window = windows.iter().next();
+    status.window = window.map(|(entity, _)| entity);
+    if let Some((_, material)) = window
+        && let Some(materials) = materials.as_deref_mut()
+        && materials.get(&material.0).is_some_and(|material| {
             (material.uniforms.flags.w & 8 != 0) != (preview && light_field)
         })
-        && let Some(mut material) = materials.get_mut(&handle)
+        && let Some(mut material) = materials.get_mut(&material.0)
     {
         let flags = &mut material.uniforms.flags.w;
         *flags = (*flags & !8) | if preview && light_field { 8 } else { 0 };
     }
-    let mut status = world.resource_mut::<LookingGlassStatus>();
-    status.window = window;
     status.light_field = light_field;
     status.quilt_preview = preview && light_field;
-    if window.is_none() {
+    if status.window.is_none() {
         status.pose_error = None;
     }
 }
@@ -254,6 +281,26 @@ fn setup(
     let Ok(plan) = plan_view_generation(metadata.view_count, config.view_generation) else {
         return;
     };
+    let mut output_window = config.window.clone();
+    let mut placement = None;
+    if let Some(display) = &config.display {
+        let infos: Vec<_> = monitors
+            .iter()
+            .map(|(entity, monitor)| MonitorInfo {
+                entity,
+                position: monitor.physical_position,
+                size: monitor.physical_size(),
+            })
+            .collect();
+        let Ok(plan) = plan_output_window(display, &infos) else {
+            return;
+        };
+        plan.apply(&mut output_window);
+        // Let Winit create and initialize the native window before asking
+        // it to enter fullscreen on the selected monitor, on every OS.
+        output_window.mode = WindowMode::Windowed;
+        placement = Some(plan);
+    }
     let screen = config.output.screen_size();
     let (mut uniforms, cells) = match &config.output {
         LookingGlassOutput::LightField { calibration, .. } => {
@@ -323,25 +370,6 @@ fn setup(
         views: views.clone(),
         cells: buffers.add(ShaderBuffer::from(cells)),
     });
-    let mut output_window = config.window.clone();
-    let mut placement = None;
-    if let Some(display) = &config.display {
-        let infos: Vec<_> = monitors
-            .iter()
-            .map(|(entity, monitor)| MonitorInfo {
-                entity,
-                position: monitor.physical_position,
-                size: monitor.physical_size(),
-            })
-            .collect();
-        if let Ok(plan) = plan_output_window(display, &infos) {
-            plan.apply(&mut output_window);
-            // Let Winit create and initialize the native window before asking
-            // it to enter fullscreen on the selected monitor, on every OS.
-            output_window.mode = WindowMode::Windowed;
-            placement = Some(PendingFullscreen(plan));
-        }
-    }
     let window = commands
         .spawn((
             output_window,
@@ -355,8 +383,18 @@ fn setup(
             Visibility::Visible,
         ))
         .id();
-    if let Some(placement) = placement {
-        commands.entity(window).insert(placement);
+    if let Some(plan) = placement {
+        commands.entity(window).insert((
+            PendingFullscreen(plan),
+            surface::WatchedSurface {
+                visible: config.window.visible,
+            },
+        ));
+        commands.insert_resource(SelectedMonitor {
+            window,
+            plan,
+            closing: false,
+        });
     }
 
     if let LookingGlassSource::Quilt { image, metadata } = &config.source {
@@ -830,29 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn disconnected_pending_monitor_closes_output_without_fullscreening_the_main_screen() {
-        let (mut app, monitor, main, output) = placement_app();
-        app.world_mut().despawn(monitor);
-        app.world_mut()
-            .resource_mut::<Messages<WindowCreated>>()
-            .write(WindowCreated { window: output });
-        app.update();
-        assert!(app.world().get_entity(output).is_err());
-        assert!(
-            app.world()
-                .resource::<LookingGlassStatus>()
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("disappeared")
-        );
-        assert_eq!(
-            app.world().get::<Window>(main).unwrap().mode,
-            WindowMode::Windowed
-        );
-    }
-
-    #[test]
     fn closed_pending_output_ignores_late_native_creation() {
         let (mut app, _, main, output) = placement_app();
         app.world_mut().despawn(output);
@@ -878,7 +893,8 @@ mod tests {
             .spawn((Camera3d::default(), ChildOf(window)))
             .id();
         app.world_mut().resource_mut::<LookingGlassControl>().stop();
-        apply_request(app.world_mut());
+        app.world_mut().run_system_cached(apply_request).unwrap();
+        app.world_mut().run_system_cached(sync_status).unwrap();
         assert!(app.world().get_entity(window).is_err());
         assert!(app.world().get_entity(camera).is_err());
         assert!(
@@ -1018,8 +1034,7 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn bridge_setup_creates_windowed_output_with_pending_selected_monitor() {
+    pub(super) fn bridge_app() -> (App, Entity) {
         let mut app = scene_app(ViewGeneration::Full);
         let position = IVec2::new(-32, 120);
         let monitor = app
@@ -1049,7 +1064,28 @@ mod tests {
             .to_string(),
             quilt: None,
         });
+        app.init_resource::<LookingGlassControl>()
+            .add_message::<WindowCreated>()
+            .add_message::<bevy::window::WindowCloseRequested>()
+            .add_message::<bevy::window::WindowDestroyed>()
+            .add_systems(
+                PreUpdate,
+                (
+                    apply_request,
+                    check_connection,
+                    finish_output_placement,
+                    sync_status,
+                )
+                    .chain(),
+            );
         app.update();
+        (app, monitor)
+    }
+
+    #[test]
+    fn bridge_setup_creates_windowed_output_with_pending_selected_monitor() {
+        let (mut app, monitor) = bridge_app();
+        let position = IVec2::new(-32, 120);
         let world = app.world_mut();
         let (window, pending) = world
             .query::<(&Window, &PendingFullscreen)>()
@@ -1096,7 +1132,12 @@ mod tests {
             })
             .insert_resource(ActiveOutput(config))
             .add_systems(Startup, setup)
-            .add_systems(Update, (sync_views, sync_focus).chain());
+            .add_systems(
+                Update,
+                (sync_views, sync_focus)
+                    .chain()
+                    .run_if(resource_exists::<ActiveOutput>),
+            );
         app
     }
 
@@ -1318,7 +1359,7 @@ mod tests {
             .init_resource::<LookingGlassOptics>()
             .insert_resource(hld_config())
             .add_systems(Startup, setup)
-            .add_systems(Update, (apply_request, sync_views).chain());
+            .add_systems(Update, (apply_request, sync_status, sync_views).chain());
         let pose = ViewPose {
             transform: Transform::from_xyz(0.0, 1.0, 5.0),
             focus_distance: 5.0,
@@ -1417,13 +1458,15 @@ mod tests {
         app.world_mut()
             .resource_mut::<LookingGlassControl>()
             .start(config);
-        apply_request(app.world_mut());
+        app.world_mut().run_system_cached(apply_request).unwrap();
+        app.world_mut().run_system_cached(sync_status).unwrap();
         let status = app.world().resource::<LookingGlassStatus>();
         assert_eq!(status.window, Some(window));
         assert!(status.error.is_some());
         assert!(app.world().contains_resource::<ActiveOutput>());
         app.world_mut().resource_mut::<LookingGlassControl>().stop();
-        apply_request(app.world_mut());
+        app.world_mut().run_system_cached(apply_request).unwrap();
+        app.world_mut().run_system_cached(sync_status).unwrap();
         assert!(app.world().resource::<LookingGlassStatus>().error.is_none());
     }
 }

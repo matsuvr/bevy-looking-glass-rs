@@ -292,7 +292,7 @@ impl LookingGlassControl {
     pub fn start(&mut self, config: LookingGlassConfig) {
         self.pending = Some(Some(config));
     }
-    /// Close the owned window and release all owned cameras and asset handles.
+    /// Cancel reconnection, close the owned window, and release owned cameras and asset handles.
     pub fn stop(&mut self) {
         self.pending = Some(None);
     }
@@ -305,13 +305,14 @@ impl LookingGlassControl {
 /// Current output state, available to UI and host window controls.
 #[derive(Resource, Default)]
 pub struct LookingGlassStatus {
-    /// Owned output window, or `None` while stopped. May be queried/moved by the host.
+    /// Owned window, or `None` while stopped or waiting for a monitor to reconnect.
+    /// A reconnected output has a new entity.
     pub window: Option<Entity>,
     /// Whether the active output uses calibrated multiview rendering.
     pub light_field: bool,
     /// Whether the active light-field output shows its virtual quilt.
     pub quilt_preview: bool,
-    /// Last start/stop error, cleared by a successful request.
+    /// Last request or monitor connection error. Cleared on successful start, recovery or stop.
     pub error: Option<String>,
     /// Current invalid reference-pose error. Clears when the pose is valid or
     /// absent; invalid poses disable scene views without recreating output.
